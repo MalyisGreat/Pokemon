@@ -216,15 +216,22 @@ class PokemonAttention(nn.Module):
         if self.config.use_flash_attention and x.is_cuda and not use_cache:
             try:
                 from flash_attn import flash_attn_func
-                # Flash attention expects (batch, seq, heads, dim)
+                # Flash attention expects (batch, seq, heads, dim) and bf16/fp16
                 q = q.transpose(1, 2)
                 k = k.transpose(1, 2)
                 v = v.transpose(1, 2)
+                # Cast to bf16 for Flash Attention compatibility
+                orig_dtype = q.dtype
+                if orig_dtype not in (torch.float16, torch.bfloat16):
+                    q, k, v = q.to(torch.bfloat16), k.to(torch.bfloat16), v.to(torch.bfloat16)
                 attn_output = flash_attn_func(
                     q, k, v,
                     dropout_p=self.config.attention_dropout if self.training else 0.0,
                     causal=True,
                 )
+                # Cast back to original dtype
+                if orig_dtype not in (torch.float16, torch.bfloat16):
+                    attn_output = attn_output.to(orig_dtype)
                 attn_output = attn_output.reshape(batch_size, seq_len, -1)
             except ImportError:
                 attn_output = self._standard_attention(q, k, v, attention_mask)
