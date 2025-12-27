@@ -326,7 +326,7 @@ class OfflineRLTrainer:
             device_ids=[self.local_rank],
             output_device=self.local_rank,
             gradient_as_bucket_view=True,  # Memory optimization
-            static_graph=True,  # Performance optimization for fixed computation graphs
+            find_unused_parameters=False,  # Faster if all params used
         )
 
         # BF16 on H100 doesn't need GradScaler (same exponent range as FP32)
@@ -472,6 +472,10 @@ class OfflineRLTrainer:
     def _train_epoch(self):
         """Train for one epoch"""
         self.model.train()
+
+        # Set epoch for DistributedSampler (ensures different shuffling each epoch)
+        if hasattr(self.train_dataloader, 'sampler') and hasattr(self.train_dataloader.sampler, 'set_epoch'):
+            self.train_dataloader.sampler.set_epoch(self.epoch)
 
         epoch_loss = 0.0
         num_batches = 0

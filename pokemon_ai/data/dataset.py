@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader, IterableDataset
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 try:
@@ -591,16 +592,31 @@ def create_dataloader(
 
     collator = PokemonDataCollator(max_turns=max_turns)
 
+    # Use DistributedSampler for multi-GPU training
+    sampler = None
+    if world_size > 1 and not streaming:
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=shuffle,
+            drop_last=True,
+        )
+
     # Build dataloader kwargs
     loader_kwargs = {
         "batch_size": batch_size,
-        "shuffle": shuffle and not streaming,
+        "shuffle": shuffle and not streaming and sampler is None,  # Don't shuffle if using sampler
         "num_workers": num_workers,
         "collate_fn": collator,
         "pin_memory": pin_memory and torch.cuda.is_available(),
         "drop_last": True,
         "persistent_workers": num_workers > 0,  # Keep workers alive between epochs
     }
+
+    # Add sampler if using distributed training
+    if sampler is not None:
+        loader_kwargs["sampler"] = sampler
 
     # Add prefetch_factor only if workers > 0
     if num_workers > 0 and prefetch_factor is not None:
