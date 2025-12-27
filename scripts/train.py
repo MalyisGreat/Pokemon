@@ -93,9 +93,12 @@ def config_to_offline_rl_config(config: dict) -> OfflineRLConfig:
 
         # Data
         data_path=data_cfg.get("path", "data/replays"),
+        dataset_type=data_cfg.get("dataset_type", "metamon"),
         max_turns=get_int(data_cfg, "max_turns", 200),
         formats=data_cfg.get("formats"),
         min_elo=get_int(data_cfg, "min_elo", None) if data_cfg.get("min_elo") else None,
+        elo_ranges=data_cfg.get("elo_ranges"),
+        gamemodes=data_cfg.get("gamemodes"),
 
         # Training
         batch_size=get_int(training_cfg, "batch_size", 32),
