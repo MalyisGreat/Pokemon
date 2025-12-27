@@ -38,15 +38,13 @@ def load_metamon_file(filepath: Path) -> List[Dict]:
             return json.load(f)
 
 
-def convert_trajectory(traj: Dict, format_id: str) -> Dict:
+def convert_trajectory(traj: Dict, format_id: str, filename: str = "") -> Dict:
     """
     Convert a single Metamon trajectory to our format.
 
     Metamon format has:
-    - observations: list of text observations
+    - states: list of UniversalState dicts (game state observations)
     - actions: list of action indices
-    - rewards: list of rewards
-    - dones: list of done flags
 
     Our format needs:
     - format: str
@@ -56,36 +54,56 @@ def convert_trajectory(traj: Dict, format_id: str) -> Dict:
     """
     steps = []
 
-    observations = traj.get("observations", [])
+    # Metamon uses 'states' not 'observations'
+    states = traj.get("states", traj.get("observations", []))
     actions = traj.get("actions", [])
-    rewards = traj.get("rewards", [])
-    dones = traj.get("dones", [])
 
-    # Ensure all lists have same length
-    min_len = min(len(observations), len(actions), len(rewards), len(dones))
+    # Extract win/rating from filename if possible
+    # Format: gen1ou-123456_1500_user_vs_opp_date_WIN.json.lz4
+    won = False
+    rating = 1400
+    if filename:
+        filename_lower = filename.lower()
+        if "_win" in filename_lower or filename_lower.endswith("win"):
+            won = True
+        elif "_loss" in filename_lower or filename_lower.endswith("loss"):
+            won = False
+        # Try to extract rating from filename (second underscore-separated field)
+        parts = filename.split("_")
+        if len(parts) >= 2:
+            try:
+                rating = int(parts[1])
+            except ValueError:
+                pass
+
+    # Ensure lists have compatible lengths
+    min_len = min(len(states), len(actions)) if states and actions else 0
 
     for i in range(min_len):
-        obs = observations[i]
+        state = states[i]
 
-        # Metamon obs is a string, we need to extract/create numerical features
-        # For now, use dummy numerical features - the text is the main info
+        # Convert state to text observation
+        if isinstance(state, str):
+            text_obs = state
+        elif isinstance(state, dict):
+            # UniversalState dict - convert to text representation
+            text_obs = str(state)  # Simple for now, can be improved
+        else:
+            text_obs = str(state)
+
+        # Create step
         step = {
-            "text_obs": obs if isinstance(obs, str) else str(obs),
+            "text_obs": text_obs,
             "numerical": [0.0] * 48,  # Placeholder - will be filled by our parser
-            "action": min(actions[i], 8),  # Clamp to valid range
-            "reward": float(rewards[i]),
-            "done": bool(dones[i]),
+            "action": min(actions[i], 8) if isinstance(actions[i], int) else 0,
+            "reward": 1.0 if (i == min_len - 1 and won) else 0.0,
+            "done": i == min_len - 1,
         }
         steps.append(step)
 
-    # Determine win/loss from final reward
-    won = False
-    if steps and steps[-1]["reward"] > 0:
-        won = True
-
     return {
         "format": format_id,
-        "rating": traj.get("rating", 1400),  # Default rating if not provided
+        "rating": rating,
         "won": won,
         "steps": steps,
     }
@@ -95,21 +113,37 @@ def process_file(args) -> List[Dict]:
     """Process a single file (for multiprocessing)"""
     filepath, format_id = args
     trajectories = []
+    filename = filepath.name if hasattr(filepath, 'name') else str(filepath)
 
     try:
         data = load_metamon_file(filepath)
 
-        # Data might be a list of trajectories or a dict with trajectories key
+        # Metamon files contain a single trajectory dict with 'states' and 'actions'
+        # OR might be a list/dict with multiple trajectories
         if isinstance(data, dict):
-            data = data.get("trajectories", data.get("data", [data]))
-
-        for traj in data:
-            try:
-                converted = convert_trajectory(traj, format_id)
+            if "states" in data or "actions" in data:
+                # Single trajectory file (most common for Metamon)
+                converted = convert_trajectory(data, format_id, filename)
                 if converted["steps"] and len(converted["steps"]) >= 3:
                     trajectories.append(converted)
-            except Exception:
-                continue
+            else:
+                # Multiple trajectories in dict
+                data = data.get("trajectories", data.get("data", [data]))
+                for traj in data:
+                    try:
+                        converted = convert_trajectory(traj, format_id, filename)
+                        if converted["steps"] and len(converted["steps"]) >= 3:
+                            trajectories.append(converted)
+                    except Exception:
+                        continue
+        elif isinstance(data, list):
+            for traj in data:
+                try:
+                    converted = convert_trajectory(traj, format_id, filename)
+                    if converted["steps"] and len(converted["steps"]) >= 3:
+                        trajectories.append(converted)
+                except Exception:
+                    continue
 
     except Exception as e:
         print(f"Error processing {filepath}: {e}")
@@ -123,20 +157,35 @@ def process_file_batch(args) -> List[Dict]:
     all_trajectories = []
 
     for filepath in filepaths:
+        filename = filepath.name if hasattr(filepath, 'name') else str(filepath)
         try:
             data = load_metamon_file(filepath)
 
-            # Data might be a list of trajectories or a dict with trajectories key
+            # Metamon files contain a single trajectory dict with 'states' and 'actions'
             if isinstance(data, dict):
-                data = data.get("trajectories", data.get("data", [data]))
-
-            for traj in data:
-                try:
-                    converted = convert_trajectory(traj, format_id)
+                if "states" in data or "actions" in data:
+                    # Single trajectory file
+                    converted = convert_trajectory(data, format_id, filename)
                     if converted["steps"] and len(converted["steps"]) >= 3:
                         all_trajectories.append(converted)
-                except Exception:
-                    continue
+                else:
+                    # Multiple trajectories
+                    data = data.get("trajectories", data.get("data", [data]))
+                    for traj in data:
+                        try:
+                            converted = convert_trajectory(traj, format_id, filename)
+                            if converted["steps"] and len(converted["steps"]) >= 3:
+                                all_trajectories.append(converted)
+                        except Exception:
+                            continue
+            elif isinstance(data, list):
+                for traj in data:
+                    try:
+                        converted = convert_trajectory(traj, format_id, filename)
+                        if converted["steps"] and len(converted["steps"]) >= 3:
+                            all_trajectories.append(converted)
+                    except Exception:
+                        continue
 
         except Exception:
             continue
@@ -145,16 +194,32 @@ def process_file_batch(args) -> List[Dict]:
 
 
 def extract_format_from_path(filepath: Path) -> str:
-    """Extract format (e.g., gen1ou, gen2uu) from file path"""
-    # Look at parent directories for format name
-    # Path structure is typically: .../gen1ou/replays/... or .../gen1ou/...
+    """Extract format (e.g., gen1ou, gen2uu) from file path or filename"""
+    # Metamon files have format at start of filename:
+    # gen1nu-2049363853_1022_user_vs_opponent_date_WIN.json.lz4
+    filename = filepath.stem.lower()  # Remove .lz4 or .json
+    if filename.endswith('.json'):
+        filename = filename[:-5]  # Remove .json from .json.lz4 files
+
+    # Check if filename starts with format (genXformat-battleid)
+    if filename.startswith("gen"):
+        # Split on hyphen or underscore to get format
+        for sep in ["-", "_"]:
+            if sep in filename:
+                format_part = filename.split(sep)[0]
+                # Validate it's a real format
+                if len(format_part) >= 5 and any(tier in format_part for tier in
+                    ["ou", "uu", "ru", "nu", "ubers", "random", "lc", "uber", "ag", "monotype"]):
+                    return format_part
+                break
+
+    # Fallback: check parent directories
     for parent in filepath.parents:
         name = parent.name.lower()
-        # Match genXou, genXuu, genXnu, genXubers, genXrandombattle
         if name.startswith("gen") and len(name) >= 5:
-            # Check if it's a valid format name
             if any(tier in name for tier in ["ou", "uu", "ru", "nu", "ubers", "random", "lc", "uber"]):
                 return name
+
     return "unknown"
 
 
