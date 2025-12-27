@@ -1,21 +1,21 @@
 # Configuration for single H100 GPU - MAXIMUM SPEED
-# 200M param model on 3.5M trajectories
+# 200M param model on 3.9M trajectories
 
 model:
   size: "base"  # ~200M parameters - matches Metamon paper
   use_flash_attention: true  # 2-3x faster attention
-  use_gradient_checkpointing: false  # Disable for speed (we have 80GB)
+  use_gradient_checkpointing: true  # Enable to reduce GPU memory usage
 
 data:
   path: "data/replays"
   max_turns: 100
   formats: ["gen1ou", "gen2ou", "gen3ou", "gen4ou", "gen5ou", "gen6ou", "gen7ou", "gen8ou", "gen9ou"]
-  # Preload data to RAM for faster training
-  preload_to_ram: true
+  # Data is on RAM disk (/dev/shm) - no need to preload, lazy loading is fast
+  preload_to_ram: false
 
 training:
-  batch_size: 64  # Larger batch = better GPU utilization
-  gradient_accumulation_steps: 2  # Effective batch = 128
+  batch_size: 32  # Reduced to fit in GPU memory with gradient checkpointing
+  gradient_accumulation_steps: 4  # Effective batch = 128 (same as before)
   num_epochs: 3
   max_steps: null
   learning_rate: 3e-4

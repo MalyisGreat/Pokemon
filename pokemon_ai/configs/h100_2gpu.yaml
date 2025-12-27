@@ -1,0 +1,55 @@
+# Configuration for 2x H100 GPUs - OPTIMIZED FOR SPEED + MEMORY
+# 200M param model on 3.9M trajectories
+# Key: gradient_checkpointing=true trades compute for memory
+
+model:
+  size: "base"  # ~200M parameters - matches Metamon paper
+  use_flash_attention: true  # 2-3x faster attention
+  use_gradient_checkpointing: true  # CRITICAL: Reduces activation memory by ~60%
+
+data:
+  path: "data/replays"
+  max_turns: 100  # Full sequence length
+  formats: ["gen1ou", "gen2ou", "gen3ou", "gen4ou", "gen5ou", "gen6ou", "gen7ou", "gen8ou", "gen9ou"]
+  preload_to_ram: false
+
+training:
+  # Per-GPU batch size 32 * 2 GPUs * 4 accum = 256 effective batch
+  batch_size: 32
+  gradient_accumulation_steps: 4
+  num_epochs: 3
+  max_steps: null
+  learning_rate: 3e-4
+  warmup_steps: 500
+  seed: 42
+  compile_model: false  # Disabled: causes dtype issues with Flash Attention
+
+rl:
+  actor_method: "binary"
+  actor_coef: 1.0
+  critic_coef: 0.5
+  entropy_coef: 0.01
+
+optimization:
+  use_mixed_precision: true
+  mixed_precision_dtype: "bf16"  # H100 native bf16, no GradScaler needed
+
+deepspeed:
+  enabled: false  # DDP is simpler and faster for 2 GPUs with this model size
+
+logging:
+  log_interval: 100
+  eval_interval: 1000
+  save_interval: 2000
+  use_wandb: true
+  wandb_project: "pokemon-superhuman"
+  wandb_run_name: "h100-2gpu-optimized"
+
+checkpoint:
+  output_dir: "checkpoints/h100_2gpu"
+  save_total_limit: 3
+
+hardware:
+  num_workers: 8  # Per-GPU workers
+  pin_memory: true
+  prefetch_factor: 4

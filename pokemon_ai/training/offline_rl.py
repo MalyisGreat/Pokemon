@@ -22,6 +22,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.distributed as dist
 
 try:
     import deepspeed
@@ -290,14 +292,55 @@ class OfflineRLTrainer:
         )
 
     def _setup_deepspeed_or_accelerate(self):
-        """Setup DeepSpeed or Accelerate for distributed training"""
+        """Setup DeepSpeed, DDP, or Accelerate for distributed training"""
         if self.config.use_deepspeed and HAS_DEEPSPEED and torch.cuda.is_available():
             self._setup_deepspeed()
+        elif self.world_size > 1 and torch.cuda.is_available():
+            # Multi-GPU without DeepSpeed - use DDP
+            self._setup_ddp()
         elif HAS_ACCELERATE:
             self._setup_accelerate()
         else:
-            # Basic setup
+            # Basic single-GPU setup
             self.model = self.model.to(self.device)
+            # Setup mixed precision scaler for non-DDP
+            if self.config.use_mixed_precision:
+                self.scaler = torch.amp.GradScaler("cuda")
+            else:
+                self.scaler = None
+
+    def _setup_ddp(self):
+        """Setup DistributedDataParallel for multi-GPU training"""
+        # Initialize process group if not already done
+        if not dist.is_initialized():
+            dist.init_process_group(backend="nccl")
+
+        # Set device for this process
+        torch.cuda.set_device(self.local_rank)
+        self.device = torch.device(f"cuda:{self.local_rank}")
+
+        # Move model to device and wrap with DDP
+        self.model = self.model.to(self.device)
+        self.model = DDP(
+            self.model,
+            device_ids=[self.local_rank],
+            output_device=self.local_rank,
+            gradient_as_bucket_view=True,  # Memory optimization
+            static_graph=True,  # Performance optimization for fixed computation graphs
+        )
+
+        # BF16 on H100 doesn't need GradScaler (same exponent range as FP32)
+        # Only use scaler for FP16
+        if self.config.use_mixed_precision and self.config.mixed_precision_dtype == "fp16":
+            self.scaler = torch.amp.GradScaler("cuda")
+        else:
+            self.scaler = None
+
+        if self.is_main_process:
+            print(f"DDP initialized with {self.world_size} GPUs")
+            print(f"  Per-GPU batch size: {self.config.batch_size}")
+            print(f"  Effective batch size: {self.config.batch_size * self.world_size * self.config.gradient_accumulation_steps}")
+            print(f"  Mixed precision: {self.config.mixed_precision_dtype} (scaler: {'enabled' if self.scaler else 'disabled'})")
 
     def _setup_deepspeed(self):
         """Setup DeepSpeed"""
@@ -452,9 +495,11 @@ class OfflineRLTrainer:
             loss, metrics = self._training_step(batch)
 
             # Backward pass
-            if self.config.use_deepspeed and HAS_DEEPSPEED:
+            if self.config.use_deepspeed and HAS_DEEPSPEED and hasattr(self.model, 'backward'):
                 self.model.backward(loss)
                 self.model.step()
+                if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
+                    self.global_step += 1
             elif HAS_ACCELERATE and hasattr(self, "accelerator"):
                 self.accelerator.backward(loss)
                 if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
@@ -462,12 +507,24 @@ class OfflineRLTrainer:
                     self.optimizer.step()
                     self.scheduler.step()
                     self.optimizer.zero_grad()
+                    self.global_step += 1
             else:
+                # DDP or single GPU path with mixed precision
                 loss = loss / self.config.gradient_accumulation_steps
-                loss.backward()
+                if self.scaler is not None:
+                    self.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+
                 if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
-                    self.optimizer.step()
+                    if self.scaler is not None:
+                        self.scaler.unscale_(self.optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
+                        self.optimizer.step()
                     self.scheduler.step()
                     self.optimizer.zero_grad()
                     self.global_step += 1
@@ -496,7 +553,8 @@ class OfflineRLTrainer:
 
             # Always update progress bar with current stats
             elapsed = time.time() - start_time
-            samples_per_sec = (num_batches * self.config.batch_size) / elapsed if elapsed > 0 else 0
+            # Multiply by world_size to get total samples across all GPUs
+            samples_per_sec = (num_batches * self.config.batch_size * self.world_size) / elapsed if elapsed > 0 else 0
 
             progress_bar.set_postfix({
                 "loss": f"{rolling_avg:.4f}",
@@ -504,6 +562,7 @@ class OfflineRLTrainer:
                 "actor": f"{actor_loss:.3f}",
                 "critic": f"{critic_loss:.3f}",
                 "s/s": f"{samples_per_sec:.0f}",
+                "gpus": f"{self.world_size}",
             })
 
             # Detailed logging at intervals
@@ -561,19 +620,24 @@ class OfflineRLTrainer:
 
     def _training_step(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Single training step"""
-        # Forward pass through model
-        outputs = self.model(
-            text_tokens=batch["text_tokens"],
-            numerical_features=batch["numerical_features"],
-            prev_actions=batch["prev_actions"],
-            prev_rewards=batch["prev_rewards"],
-            turn_mask=batch["turn_mask"],
-            action_mask=batch.get("action_mask"),
-        )
+        # Determine autocast dtype
+        use_autocast = self.config.use_mixed_precision and not (self.config.use_deepspeed and HAS_DEEPSPEED)
+        autocast_dtype = torch.bfloat16 if self.config.mixed_precision_dtype == "bf16" else torch.float16
 
-        # Compute loss
-        loss_dict = self.loss_fn(outputs, batch)
-        loss = loss_dict["loss"]
+        # Forward pass through model with optional autocast
+        with torch.amp.autocast("cuda", enabled=use_autocast, dtype=autocast_dtype):
+            outputs = self.model(
+                text_tokens=batch["text_tokens"],
+                numerical_features=batch["numerical_features"],
+                prev_actions=batch["prev_actions"],
+                prev_rewards=batch["prev_rewards"],
+                turn_mask=batch["turn_mask"],
+                action_mask=batch.get("action_mask"),
+            )
+
+            # Compute loss
+            loss_dict = self.loss_fn(outputs, batch)
+            loss = loss_dict["loss"]
 
         return loss, loss_dict
 
