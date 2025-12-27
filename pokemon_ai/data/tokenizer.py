@@ -230,11 +230,23 @@ class PokemonTokenizer:
         The observation format from the paper:
         <format> <choice_type> <player> ... <opponent> ... <conditions> ... <player_prev> ... <opp_prev> ...
         """
+        # Handle dict/complex objects being passed as strings
+        if not isinstance(obs_text, str):
+            obs_text = str(obs_text)
+
+        # If it looks like a Python dict repr, just use padding (can't parse it)
+        if obs_text.startswith("{") or obs_text.startswith("{'"):
+            ids = [self.pad_token_id] * max_length
+            return torch.tensor(ids, dtype=torch.long)
+
         ids = self.encode(obs_text)
+
+        # Clamp all IDs to valid range
+        ids = [min(max(0, i), self.vocab_size - 1) for i in ids]
 
         # Pad or truncate to max_length
         if len(ids) < max_length:
-            ids = ids + [self.token_to_id["<pad>"]] * (max_length - len(ids))
+            ids = ids + [self.pad_token_id] * (max_length - len(ids))
         else:
             ids = ids[:max_length]
 

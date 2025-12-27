@@ -265,13 +265,19 @@ class PokemonBattleDataset(Dataset):
         dones = torch.zeros(self.max_turns, dtype=torch.bool)
         turn_mask = torch.zeros(self.max_turns, dtype=torch.bool)
 
+        # Get vocab size for clamping (default 8192)
+        vocab_size = len(self.tokenizer) if hasattr(self.tokenizer, '__len__') else 8192
+
         for i, step in enumerate(steps[:seq_len]):
-            # Text tokens
+            # Text tokens - clamp to valid vocab range to avoid index errors
             if "text_obs" in step:
                 tokens = self.tokenizer.encode_observation(step["text_obs"], self.num_text_tokens)
+                tokens = tokens.clamp(0, vocab_size - 1)
                 text_tokens[i] = tokens
             elif "text_tokens" in step:
-                text_tokens[i] = torch.tensor(step["text_tokens"][:self.num_text_tokens])
+                toks = torch.tensor(step["text_tokens"][:self.num_text_tokens], dtype=torch.long)
+                toks = toks.clamp(0, vocab_size - 1)
+                text_tokens[i, :len(toks)] = toks
 
             # Numerical features
             if "numerical" in step:
