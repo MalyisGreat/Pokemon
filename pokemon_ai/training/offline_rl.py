@@ -434,6 +434,10 @@ class OfflineRLTrainer:
         num_batches = 0
         start_time = time.time()
 
+        # For tracking improvement
+        recent_losses = []
+        window_size = 100  # Rolling average window
+
         progress_bar = tqdm(
             self.train_dataloader,
             desc=f"Epoch {self.epoch}",
@@ -468,35 +472,58 @@ class OfflineRLTrainer:
                     self.optimizer.zero_grad()
                     self.global_step += 1
 
-            epoch_loss += loss.item()
+            current_loss = loss.item()
+            epoch_loss += current_loss
             num_batches += 1
 
-            # Logging
+            # Track recent losses for rolling average
+            recent_losses.append(current_loss)
+            if len(recent_losses) > window_size:
+                recent_losses.pop(0)
+            rolling_avg = sum(recent_losses) / len(recent_losses)
+
+            # Update best loss
+            if rolling_avg < self.best_loss and len(recent_losses) >= window_size:
+                self.best_loss = rolling_avg
+
+            # Get individual loss components
+            actor_loss = metrics.get("actor_loss", 0)
+            critic_loss = metrics.get("critic_loss", 0)
+            if torch.is_tensor(actor_loss):
+                actor_loss = actor_loss.item()
+            if torch.is_tensor(critic_loss):
+                critic_loss = critic_loss.item()
+
+            # Always update progress bar with current stats
+            elapsed = time.time() - start_time
+            samples_per_sec = (num_batches * self.config.batch_size) / elapsed if elapsed > 0 else 0
+
+            progress_bar.set_postfix({
+                "loss": f"{rolling_avg:.4f}",
+                "best": f"{self.best_loss:.4f}",
+                "actor": f"{actor_loss:.3f}",
+                "critic": f"{critic_loss:.3f}",
+                "s/s": f"{samples_per_sec:.0f}",
+            })
+
+            # Detailed logging at intervals
             if self.global_step % self.config.log_interval == 0 and self.is_main_process:
                 avg_loss = epoch_loss / num_batches
                 lr = self.scheduler.get_last_lr()[0]
-                elapsed = time.time() - start_time
-                samples_per_sec = (num_batches * self.config.batch_size) / elapsed
 
-                # Get individual loss components for display
-                actor_loss = metrics.get("actor_loss", 0)
-                critic_loss = metrics.get("critic_loss", 0)
-                if torch.is_tensor(actor_loss):
-                    actor_loss = actor_loss.item()
-                if torch.is_tensor(critic_loss):
-                    critic_loss = critic_loss.item()
+                # Log to CSV file
+                self._log_to_csv(self.global_step, avg_loss, rolling_avg, actor_loss, critic_loss, lr, samples_per_sec)
 
-                progress_bar.set_postfix({
-                    "loss": f"{avg_loss:.4f}",
-                    "actor": f"{actor_loss:.2f}",
-                    "critic": f"{critic_loss:.2f}",
-                    "lr": f"{lr:.2e}",
-                    "samples/s": f"{samples_per_sec:.1f}",
-                })
+                # Print summary every 500 steps
+                if self.global_step % 500 == 0:
+                    improvement = "improving" if rolling_avg < self.best_loss * 1.1 else "stalled"
+                    print(f"\n[Step {self.global_step}] Loss: {rolling_avg:.4f} | Best: {self.best_loss:.4f} | Status: {improvement}")
 
                 if self.config.use_wandb and HAS_WANDB:
                     wandb.log({
                         "train/loss": avg_loss,
+                        "train/rolling_loss": rolling_avg,
+                        "train/best_loss": self.best_loss,
                         "train/learning_rate": lr,
                         "train/epoch": self.epoch,
                         "train/global_step": self.global_step,
@@ -511,6 +538,26 @@ class OfflineRLTrainer:
             # Check max steps
             if self.config.max_steps and self.global_step >= self.config.max_steps:
                 break
+
+        # End of epoch summary
+        if self.is_main_process:
+            avg_loss = epoch_loss / max(num_batches, 1)
+            print(f"\n{'='*60}")
+            print(f"Epoch {self.epoch} Complete")
+            print(f"  Average Loss: {avg_loss:.4f}")
+            print(f"  Best Loss:    {self.best_loss:.4f}")
+            print(f"  Total Steps:  {self.global_step}")
+            print(f"{'='*60}\n")
+
+    def _log_to_csv(self, step, avg_loss, rolling_loss, actor_loss, critic_loss, lr, samples_per_sec):
+        """Log metrics to CSV file for easy plotting"""
+        csv_path = self.output_dir / "training_log.csv"
+        write_header = not csv_path.exists()
+
+        with open(csv_path, "a") as f:
+            if write_header:
+                f.write("step,avg_loss,rolling_loss,actor_loss,critic_loss,lr,samples_per_sec,best_loss\n")
+            f.write(f"{step},{avg_loss:.6f},{rolling_loss:.6f},{actor_loss:.6f},{critic_loss:.6f},{lr:.2e},{samples_per_sec:.1f},{self.best_loss:.6f}\n")
 
     def _training_step(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Single training step"""
