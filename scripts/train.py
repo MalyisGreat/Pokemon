@@ -144,6 +144,12 @@ def config_to_offline_rl_config(config: dict) -> OfflineRLConfig:
 
         # Hardware
         num_workers=get_int(hw_cfg, "num_workers", 4),
+        pin_memory=get_bool(hw_cfg, "pin_memory", True),
+        prefetch_factor=get_int(hw_cfg, "prefetch_factor", 2),
+
+        # Speed optimizations
+        compile_model=get_bool(training_cfg, "compile_model", False),
+        preload_to_ram=get_bool(data_cfg, "preload_to_ram", False),
     )
 
 

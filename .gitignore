@@ -1,7 +1,8 @@
 # Data (downloaded on RunPod, don't push)
-data/
+/data/
 *.json
 !pokemon_ai/**/*.json
+!pokemon_ai/data/
 
 # Checkpoints
 checkpoints/

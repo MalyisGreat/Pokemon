@@ -117,6 +117,47 @@ def process_file(args) -> List[Dict]:
     return trajectories
 
 
+def process_file_batch(args) -> List[Dict]:
+    """Process a batch of files (for better CPU utilization)"""
+    filepaths, format_id = args
+    all_trajectories = []
+
+    for filepath in filepaths:
+        try:
+            data = load_metamon_file(filepath)
+
+            # Data might be a list of trajectories or a dict with trajectories key
+            if isinstance(data, dict):
+                data = data.get("trajectories", data.get("data", [data]))
+
+            for traj in data:
+                try:
+                    converted = convert_trajectory(traj, format_id)
+                    if converted["steps"] and len(converted["steps"]) >= 3:
+                        all_trajectories.append(converted)
+                except Exception:
+                    continue
+
+        except Exception:
+            continue
+
+    return all_trajectories
+
+
+def extract_format_from_path(filepath: Path) -> str:
+    """Extract format (e.g., gen1ou, gen2uu) from file path"""
+    # Look at parent directories for format name
+    # Path structure is typically: .../gen1ou/replays/... or .../gen1ou/...
+    for parent in filepath.parents:
+        name = parent.name.lower()
+        # Match genXou, genXuu, genXnu, genXubers, genXrandombattle
+        if name.startswith("gen") and len(name) >= 5:
+            # Check if it's a valid format name
+            if any(tier in name for tier in ["ou", "uu", "ru", "nu", "ubers", "random", "lc", "uber"]):
+                return name
+    return "unknown"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Convert Metamon data to training format")
     parser.add_argument(
@@ -135,6 +176,12 @@ def main():
         default=8,
         help="Number of parallel workers",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=500,
+        help="Files per batch (higher = more memory, better CPU util)",
+    )
 
     args = parser.parse_args()
 
@@ -151,22 +198,10 @@ def main():
         print(f"Make sure to download first: python scripts/download_hf_data.py --dataset metamon")
         return
 
-    # Group by format
+    # Group by format using improved detection
     format_files = {}
     for f in files:
-        # Try to extract format from path or filename
-        # e.g., gen1ou/data.json or gen1ou_trajectories.json
-        parts = f.parts + (f.stem,)
-        format_id = "unknown"
-        for part in parts:
-            part_lower = part.lower()
-            if part_lower.startswith("gen") and "ou" in part_lower:
-                format_id = part_lower.split("_")[0].split(".")[0]
-                break
-            elif part_lower.startswith("gen") and any(x in part_lower for x in ["uu", "ru", "nu", "random"]):
-                format_id = part_lower.split("_")[0].split(".")[0]
-                break
-
+        format_id = extract_format_from_path(f)
         if format_id not in format_files:
             format_files[format_id] = []
         format_files[format_id].append(f)
@@ -180,10 +215,16 @@ def main():
         print(f"\nProcessing {format_id}: {len(files)} files")
 
         all_trajectories = []
-        work_items = [(f, format_id) for f in files]
+
+        # Create batches for better CPU utilization
+        batch_size = args.batch_size
+        batches = [files[i:i + batch_size] for i in range(0, len(files), batch_size)]
+        work_items = [(batch, format_id) for batch in batches]
+
+        print(f"  Created {len(batches)} batches of ~{batch_size} files each")
 
         with ProcessPoolExecutor(max_workers=args.workers) as executor:
-            futures = {executor.submit(process_file, item): item for item in work_items}
+            futures = {executor.submit(process_file_batch, item): item for item in work_items}
 
             for future in tqdm(as_completed(futures), total=len(futures), desc=format_id):
                 trajectories = future.result()
