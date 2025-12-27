@@ -26,7 +26,19 @@ import torch
 from torch.utils.data import Dataset, DataLoader, IterableDataset
 from tqdm import tqdm
 
+try:
+    import lz4.frame
+    HAS_LZ4 = True
+except ImportError:
+    HAS_LZ4 = False
+
 from pokemon_ai.data.tokenizer import PokemonTokenizer
+
+
+def load_lz4_json(filepath: Path) -> Dict:
+    """Load lz4-compressed JSON file (Metamon format)"""
+    with lz4.frame.open(filepath, 'rb') as f:
+        return json.loads(f.read().decode('utf-8'))
 
 
 @dataclass
@@ -100,9 +112,16 @@ class PokemonBattleDataset(Dataset):
             # Single file
             self._load_file(self.data_path)
         else:
-            # Directory of files
-            pattern = "*.pt" if any(self.data_path.glob("*.pt")) else "*.json"
-            files = sorted(self.data_path.glob(pattern))
+            # Directory of files - check for .pt, .json, or .lz4 (Metamon format)
+            files = []
+            if any(self.data_path.glob("*.pt")):
+                files = sorted(self.data_path.glob("*.pt"))
+            elif any(self.data_path.glob("*.json")):
+                files = sorted(self.data_path.glob("*.json"))
+            elif HAS_LZ4 and any(self.data_path.rglob("*.lz4")):
+                # Metamon format: .lz4 files in subdirectories
+                files = sorted(self.data_path.rglob("*.lz4"))
+                print(f"Found {len(files)} Metamon .lz4 files")
 
             for file_path in tqdm(files, desc="Loading data"):
                 self._load_file(file_path)
@@ -114,24 +133,84 @@ class PokemonBattleDataset(Dataset):
 
     def _load_file(self, file_path: Path):
         """Load a single data file"""
-        if file_path.suffix == ".pt":
-            data = torch.load(file_path)
-        else:
-            with open(file_path, "r") as f:
-                data = json.load(f)
+        file_path = Path(file_path)
+        try:
+            if file_path.suffix == ".pt":
+                data = torch.load(file_path)
+            elif file_path.suffix == ".lz4" and HAS_LZ4:
+                # Metamon format: single trajectory per .lz4 file
+                data = load_lz4_json(file_path)
+                # Convert Metamon format to our format
+                data = self._convert_metamon_trajectory(data, file_path)
+            else:
+                with open(file_path, "r") as f:
+                    data = json.load(f)
 
-        trajectories = data if isinstance(data, list) else data.get("trajectories", [data])
+            trajectories = data if isinstance(data, list) else data.get("trajectories", [data])
 
-        for idx, traj in enumerate(trajectories):
-            # Apply filters
-            if self._should_include(traj):
-                if self.cache_in_memory:
-                    self.trajectories.append(self._process_trajectory(traj))
-                else:
-                    self.file_index.append((str(file_path), idx))
+            for idx, traj in enumerate(trajectories):
+                # Apply filters
+                if self._should_include(traj):
+                    if self.cache_in_memory:
+                        self.trajectories.append(self._process_trajectory(traj))
+                    else:
+                        self.file_index.append((str(file_path), idx))
 
-                if self.max_samples and len(self.file_index) >= self.max_samples:
-                    break
+                    if self.max_samples and len(self.file_index) >= self.max_samples:
+                        break
+        except Exception as e:
+            pass  # Skip corrupted files silently
+
+    def _convert_metamon_trajectory(self, data: Dict, file_path: Path) -> Dict:
+        """Convert Metamon format to our format"""
+        # Metamon has 'states' and 'actions'
+        states = data.get("states", [])
+        actions = data.get("actions", [])
+
+        # Extract format and metadata from filename
+        # Format: gen1ou-123456_1500_user_vs_opp_date_WIN.json.lz4
+        filename = file_path.name.lower()
+        format_id = "gen9ou"  # default
+        won = "_win" in filename
+        rating = 1400
+
+        # Parse format from filename
+        if filename.startswith("gen"):
+            parts = filename.split("-")
+            if parts:
+                format_id = parts[0]
+
+        # Parse rating from filename
+        name_parts = filename.split("_")
+        if len(name_parts) >= 2:
+            try:
+                rating = int(name_parts[1])
+            except ValueError:
+                pass
+
+        # Build steps
+        steps = []
+        min_len = min(len(states), len(actions)) if states and actions else 0
+
+        for i in range(min_len):
+            state = states[i]
+            # Convert state to text (Metamon states are dicts)
+            text_obs = str(state) if isinstance(state, dict) else state
+
+            steps.append({
+                "text_obs": text_obs,
+                "numerical": [0.0] * 48,
+                "action": min(actions[i], 8) if isinstance(actions[i], int) else 0,
+                "reward": 1.0 if (i == min_len - 1 and won) else 0.0,
+                "done": i == min_len - 1,
+            })
+
+        return {
+            "format": format_id,
+            "rating": rating,
+            "won": won,
+            "steps": steps,
+        }
 
     def _should_include(self, traj: Dict) -> bool:
         """Check if trajectory passes filters"""
