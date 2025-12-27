@@ -50,6 +50,6 @@ checkpoint:
   save_total_limit: 3
 
 hardware:
-  num_workers: 32  # Per-GPU workers - H100 pods have 48+ cores, use more
+  num_workers: 16  # Reduce worker thrash across ranks
   pin_memory: true
-  prefetch_factor: 4  # Lower prefetch with more workers to reduce memory
+  prefetch_factor: 2  # Lower prefetch to reduce memory/IO pressure

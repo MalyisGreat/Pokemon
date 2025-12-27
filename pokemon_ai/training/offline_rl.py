@@ -12,6 +12,7 @@ Main training loop for Pokemon AI with:
 import os
 import math
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Union
@@ -550,12 +551,17 @@ class OfflineRLTrainer:
             else:
                 # DDP or single GPU path with mixed precision
                 loss = loss / self.config.gradient_accumulation_steps
-                if self.scaler is not None:
-                    self.scaler.scale(loss).backward()
-                else:
-                    loss.backward()
+                sync_grad = (batch_idx + 1) % self.config.gradient_accumulation_steps == 0
+                use_ddp = isinstance(self.model, DDP)
+                sync_context = nullcontext() if (sync_grad or not use_ddp) else self.model.no_sync()
 
-                if (batch_idx + 1) % self.config.gradient_accumulation_steps == 0:
+                with sync_context:
+                    if self.scaler is not None:
+                        self.scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+
+                if sync_grad:
                     if self.scaler is not None:
                         self.scaler.unscale_(self.optimizer)
                         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.max_grad_norm)
