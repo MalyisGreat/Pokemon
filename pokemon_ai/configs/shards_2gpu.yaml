@@ -44,6 +44,11 @@ optimization:
   use_mixed_precision: true
   mixed_precision_dtype: "bf16"
 
+# Validation - monitor action accuracy during training
+validation:
+  val_split: 0.02  # Use 2% for validation
+  val_interval: 500  # Validate every 500 steps
+
 # Logging
 logging:
   log_interval: 50

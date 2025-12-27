@@ -80,6 +80,10 @@ class OfflineRLConfig:
     max_grad_norm: float = 1.0
     warmup_steps: int = 1000
 
+    # Validation
+    val_split: float = 0.02  # Use 2% of data for validation
+    val_interval: int = 500  # Validate every N steps
+
     # RL specific
     actor_method: str = "binary"  # "il", "exp", "binary", "binary_maxq"
     actor_coef: float = 1.0
@@ -262,6 +266,46 @@ class OfflineRLTrainer:
                 prefetch_factor=self.config.prefetch_factor if self.config.num_workers > 0 else None,
                 preload_to_ram=self.config.preload_to_ram,
             )
+
+        # Setup validation dataloader (smaller, no shuffle)
+        self.val_dataloader = None
+        if self.config.val_split > 0:
+            self._setup_val_data()
+
+    def _setup_val_data(self):
+        """Setup validation dataloader using a subset of data"""
+        if self.config.dataset_type == "shards":
+            from pokemon_ai.data.shard_dataset import create_shard_dataloader
+            # For shards, use same directory but with shuffle=False for consistency
+            # We'll just validate on a random subset of batches
+            self.val_dataloader = create_shard_dataloader(
+                shard_dir=self.config.data_path,
+                batch_size=self.config.batch_size,
+                max_turns=self.config.max_turns,
+                num_workers=min(4, self.config.num_workers),  # Fewer workers for val
+                shuffle=False,  # Consistent validation
+                world_size=self.world_size,
+                rank=self.local_rank,
+                pin_memory=self.config.pin_memory,
+            )
+        elif self.config.dataset_type == "pokechamp":
+            # PokeChamp has a test split
+            from pokemon_ai.data.pokechamp_dataset import create_pokechamp_dataloader
+            self.val_dataloader = create_pokechamp_dataloader(
+                split="test",  # Use test split for validation
+                batch_size=self.config.batch_size,
+                max_turns=self.config.max_turns,
+                num_workers=min(4, self.config.num_workers),
+                shuffle=False,
+                world_size=self.world_size,
+                rank=self.local_rank,
+                pin_memory=self.config.pin_memory,
+                elo_ranges=self.config.elo_ranges,
+                gamemodes=self.config.gamemodes,
+            )
+
+        if self.val_dataloader and self.is_main_process:
+            print(f"Validation dataloader ready")
 
     def _setup_loss(self):
         """Setup loss function"""
@@ -635,6 +679,10 @@ class OfflineRLTrainer:
                         **{f"train/{k}": v.item() if torch.is_tensor(v) else v for k, v in metrics.items()},
                     }, step=self.global_step)
 
+            # Run validation
+            if self.global_step > 0 and self.global_step % self.config.val_interval == 0:
+                self._validate()
+
             # Save checkpoint (avoid saving at step 0)
             if self.global_step > 0 and self.global_step % self.config.save_interval == 0 and self.is_main_process:
                 self._save_checkpoint(f"step_{self.global_step}")
@@ -692,6 +740,109 @@ class OfflineRLTrainer:
             k: v.to(self.device) if torch.is_tensor(v) else v
             for k, v in batch.items()
         }
+
+    @torch.no_grad()
+    def _validate(self, max_batches: int = 50) -> Dict[str, float]:
+        """
+        Run validation and compute metrics.
+
+        Returns:
+            Dict with val_loss, action_accuracy, top3_accuracy, value_accuracy
+        """
+        if self.val_dataloader is None:
+            return {}
+
+        self.model.eval()
+
+        total_loss = 0.0
+        total_correct = 0
+        total_top3_correct = 0
+        total_value_correct = 0
+        total_samples = 0
+        total_turns = 0
+
+        use_autocast = self.config.use_mixed_precision
+        autocast_dtype = torch.bfloat16 if self.config.mixed_precision_dtype == "bf16" else torch.float16
+
+        for batch_idx, batch in enumerate(self.val_dataloader):
+            if batch_idx >= max_batches:
+                break
+
+            batch = self._move_batch_to_device(batch)
+            turn_mask = batch["turn_mask"]  # [B, T]
+
+            with torch.amp.autocast("cuda", enabled=use_autocast, dtype=autocast_dtype):
+                outputs = self.model(
+                    text_tokens=batch["text_tokens"],
+                    numerical_features=batch["numerical_features"],
+                    prev_actions=batch["prev_actions"],
+                    prev_rewards=batch["prev_rewards"],
+                    turn_mask=turn_mask,
+                    action_mask=batch.get("action_mask"),
+                )
+
+                loss_dict = self.loss_fn(outputs, batch)
+                total_loss += loss_dict["loss"].item()
+
+            # Action accuracy: does model predict same action as human?
+            action_logits = outputs["action_logits"]  # [B, T, num_actions]
+            target_actions = batch["actions"]  # [B, T]
+
+            # Get predictions
+            pred_actions = action_logits.argmax(dim=-1)  # [B, T]
+
+            # Mask and count correct
+            mask = turn_mask.bool()
+            correct = (pred_actions == target_actions) & mask
+            total_correct += correct.sum().item()
+            total_turns += mask.sum().item()
+
+            # Top-3 accuracy
+            top3_preds = action_logits.topk(3, dim=-1).indices  # [B, T, 3]
+            target_expanded = target_actions.unsqueeze(-1)  # [B, T, 1]
+            top3_correct = ((top3_preds == target_expanded).any(dim=-1)) & mask
+            total_top3_correct += top3_correct.sum().item()
+
+            # Value accuracy: did we predict win/loss correctly?
+            # Use the value head output for gamma=0.99
+            if "value_logits" in outputs:
+                value_logits = outputs["value_logits"]  # [B, T, num_gammas, num_bins]
+                # Get the 0.99 gamma (index 1) predictions at the last valid turn
+                batch_size = turn_mask.size(0)
+                for b in range(batch_size):
+                    # Find last valid turn
+                    valid_turns = turn_mask[b].nonzero()
+                    if len(valid_turns) > 0:
+                        last_turn = valid_turns[-1].item()
+                        # Value prediction (simplified: check if predicted positive for winners)
+                        val_pred = value_logits[b, last_turn, 1].argmax().item()  # bin index
+                        actual_won = batch["won"][b].item()
+                        # Bins go from -1 to 1, so middle is ~0. Above middle = predicting win
+                        pred_win = val_pred > value_logits.size(-1) // 2
+                        if pred_win == actual_won:
+                            total_value_correct += 1
+                        total_samples += 1
+
+        self.model.train()
+
+        num_batches = min(batch_idx + 1, max_batches)
+        metrics = {
+            "val_loss": total_loss / max(num_batches, 1),
+            "action_accuracy": total_correct / max(total_turns, 1),
+            "top3_accuracy": total_top3_correct / max(total_turns, 1),
+            "value_accuracy": total_value_correct / max(total_samples, 1),
+        }
+
+        if self.is_main_process:
+            print(f"\n[Validation] Loss: {metrics['val_loss']:.4f} | "
+                  f"Action Acc: {metrics['action_accuracy']:.1%} | "
+                  f"Top-3 Acc: {metrics['top3_accuracy']:.1%} | "
+                  f"Value Acc: {metrics['value_accuracy']:.1%}")
+
+            if self.config.use_wandb and HAS_WANDB:
+                wandb.log({f"val/{k}": v for k, v in metrics.items()}, step=self.global_step)
+
+        return metrics
 
     def _save_checkpoint(self, name: str):
         """Save model checkpoint"""

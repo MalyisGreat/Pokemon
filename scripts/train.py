@@ -86,6 +86,7 @@ def config_to_offline_rl_config(config: dict) -> OfflineRLConfig:
     log_cfg = config.get("logging", {})
     ckpt_cfg = config.get("checkpoint", {})
     hw_cfg = config.get("hardware", {})
+    val_cfg = config.get("validation", {})
 
     return OfflineRLConfig(
         # Model
@@ -153,6 +154,10 @@ def config_to_offline_rl_config(config: dict) -> OfflineRLConfig:
         # Speed optimizations
         compile_model=get_bool(training_cfg, "compile_model", False),
         preload_to_ram=get_bool(data_cfg, "preload_to_ram", False),
+
+        # Validation
+        val_split=get_float(val_cfg, "val_split", 0.02),
+        val_interval=get_int(val_cfg, "val_interval", 500),
     )
 
 
