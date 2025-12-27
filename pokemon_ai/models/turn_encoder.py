@@ -129,12 +129,19 @@ class TurnEncoderAttention(nn.Module):
         if self.config.use_flash_attention and x.is_cuda:
             try:
                 from flash_attn import flash_attn_func
-                # Flash attention expects (batch, seq, heads, dim)
+                # Flash attention expects (batch, seq, heads, dim) and bf16/fp16
                 q = rearrange(q, "b h s d -> b s h d")
                 k = rearrange(k, "b h s d -> b s h d")
                 v = rearrange(v, "b h s d -> b s h d")
+                # Cast to bf16 for Flash Attention compatibility
+                orig_dtype = q.dtype
+                if orig_dtype not in (torch.float16, torch.bfloat16):
+                    q, k, v = q.to(torch.bfloat16), k.to(torch.bfloat16), v.to(torch.bfloat16)
                 attn_output = flash_attn_func(q, k, v, dropout_p=self.config.dropout if self.training else 0.0)
                 attn_output = rearrange(attn_output, "b s h d -> b s (h d)")
+                # Cast back to original dtype
+                if orig_dtype not in (torch.float16, torch.bfloat16):
+                    attn_output = attn_output.to(orig_dtype)
             except ImportError:
                 attn_output = self._standard_attention(q, k, v, attention_mask)
         else:
