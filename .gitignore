@@ -1,0 +1,42 @@
+# Data (downloaded on RunPod, don't push)
+data/
+*.json
+!pokemon_ai/**/*.json
+
+# Checkpoints
+checkpoints/
+*.pt
+*.bin
+*.safetensors
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+wandb/
+runs/
+
+# Temp
+*.tmp
+*.temp

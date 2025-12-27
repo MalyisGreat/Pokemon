@@ -1,0 +1,29 @@
+# Configuration for 8x H100 GPU training
+# ~2B parameter model with full sharding
+
+defaults:
+  - default
+
+model:
+  size: "xxl"  # ~2B parameters
+
+training:
+  batch_size: 48  # Per GPU, total 384
+  gradient_accumulation_steps: 1
+  learning_rate: 1.5e-4
+  warmup_steps: 2000
+
+optimization:
+  use_mixed_precision: true
+  mixed_precision_dtype: "bf16"
+
+deepspeed:
+  enabled: true
+  stage: 3  # Full sharding for larger models
+  offload_optimizer: false
+  offload_param: false
+
+logging:
+  wandb_run_name: "h100-8gpu-xxl"
+  log_interval: 50
+  save_interval: 2500

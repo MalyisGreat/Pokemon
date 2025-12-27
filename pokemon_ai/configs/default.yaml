@@ -1,0 +1,68 @@
+# Default configuration for Pokemon AI training
+# Optimized for H100 GPUs
+
+# Model settings
+model:
+  size: "xl"  # small, base, large, xl, xxl
+  use_flash_attention: true
+  use_gradient_checkpointing: true
+
+# Data settings
+data:
+  path: "data/replays"
+  max_turns: 200
+  formats: null  # null = all formats, or list like ["gen1ou", "gen2ou"]
+  min_elo: null  # null = no filter
+
+# Training settings
+training:
+  batch_size: 48  # Per GPU
+  gradient_accumulation_steps: 2
+  num_epochs: 10
+  max_steps: null  # Override epochs if set
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-4
+  max_grad_norm: 1.0
+  warmup_steps: 1000
+  seed: 42
+
+# Offline RL settings
+rl:
+  actor_method: "binary"  # il, exp, binary, binary_maxq
+  actor_coef: 1.0
+  critic_coef: 10.0
+  entropy_coef: 0.01
+  maxq_lambda: 0.0
+  beta: 0.5
+  gammas: [0.9, 0.99, 0.999, 0.9999]
+
+# Optimization settings
+optimization:
+  use_mixed_precision: true
+  mixed_precision_dtype: "bf16"
+
+# DeepSpeed settings
+deepspeed:
+  enabled: true
+  stage: 2  # ZeRO stage
+  offload_optimizer: false
+  offload_param: false
+
+# Logging settings
+logging:
+  log_interval: 100
+  eval_interval: 1000
+  save_interval: 5000
+  use_wandb: true
+  wandb_project: "pokemon-superhuman"
+  wandb_run_name: null
+
+# Checkpointing
+checkpoint:
+  output_dir: "checkpoints"
+  resume_from: null
+  save_total_limit: 5
+
+# Hardware
+hardware:
+  num_workers: 4

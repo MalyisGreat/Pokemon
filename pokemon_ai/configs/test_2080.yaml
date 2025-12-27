@@ -1,0 +1,47 @@
+# Test config for RTX 2080 Super (8GB VRAM)
+# Small model for local testing before scaling up
+
+model:
+  size: "small"  # ~50M params
+  use_flash_attention: false  # 2080 doesn't support Flash Attention 2
+  use_gradient_checkpointing: true
+
+data:
+  path: "data/replays"
+  max_turns: 50  # Shorter sequences for testing
+  formats: ["gen1ou"]
+
+training:
+  batch_size: 2  # Small batch for 8GB VRAM
+  gradient_accumulation_steps: 8  # Effective batch = 16
+  num_epochs: 1
+  max_steps: 100  # Quick test
+  learning_rate: 1e-4
+  warmup_steps: 10
+  seed: 42
+
+rl:
+  actor_method: "binary"
+  actor_coef: 1.0
+  critic_coef: 10.0
+  entropy_coef: 0.01
+
+optimization:
+  use_mixed_precision: true
+  mixed_precision_dtype: "fp16"  # 2080 doesn't have bf16
+
+deepspeed:
+  enabled: false  # Not needed for single GPU test
+
+logging:
+  log_interval: 10
+  eval_interval: 50
+  save_interval: 100
+  use_wandb: false  # Disable for quick test
+
+checkpoint:
+  output_dir: "checkpoints/test"
+  save_total_limit: 2
+
+hardware:
+  num_workers: 2
