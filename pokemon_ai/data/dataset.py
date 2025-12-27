@@ -103,6 +103,7 @@ class PokemonBattleDataset(Dataset):
 
         self.trajectories: List[Dict[str, Any]] = []
         self.file_index: List[Tuple[str, int]] = []  # (file_path, traj_idx)
+        self._is_metamon = False  # Will be set to True for Metamon .lz4 files
 
         self._load_data()
 
@@ -114,22 +115,41 @@ class PokemonBattleDataset(Dataset):
         else:
             # Directory of files - check for .pt, .json, or .lz4 (Metamon format)
             files = []
+            is_metamon = False
+
             if any(self.data_path.glob("*.pt")):
                 files = sorted(self.data_path.glob("*.pt"))
             elif any(self.data_path.glob("*.json")):
                 files = sorted(self.data_path.glob("*.json"))
-            elif HAS_LZ4 and any(self.data_path.rglob("*.lz4")):
+            elif HAS_LZ4:
                 # Metamon format: .lz4 files in subdirectories
-                files = sorted(self.data_path.rglob("*.lz4"))
-                print(f"Found {len(files)} Metamon .lz4 files")
+                # Use fast file listing instead of rglob for millions of files
+                print("Scanning for .lz4 files...")
+                files = list(self.data_path.rglob("*.lz4"))
+                if files:
+                    is_metamon = True
+                    print(f"Found {len(files)} Metamon .lz4 files")
 
-            for file_path in tqdm(files, desc="Loading data"):
-                self._load_file(file_path)
+            if is_metamon:
+                # FAST PATH: For Metamon .lz4 files, just index file paths
+                # Each .lz4 file contains ONE trajectory, so we index them directly
+                # No need to load and parse each file upfront!
+                if self.max_samples:
+                    files = files[:self.max_samples]
 
-                if self.max_samples and len(self.file_index) >= self.max_samples:
-                    break
+                # Just store paths - load on-demand in __getitem__
+                self.file_index = [(str(f), 0) for f in files]
+                self._is_metamon = True
+                print(f"Indexed {len(self.file_index)} trajectories (lazy loading enabled)")
+            else:
+                # Original path for .pt/.json files
+                self._is_metamon = False
+                for file_path in tqdm(files, desc="Loading data"):
+                    self._load_file(file_path)
 
-        print(f"Loaded {len(self.file_index)} trajectories")
+                    if self.max_samples and len(self.file_index) >= self.max_samples:
+                        break
+                print(f"Loaded {len(self.file_index)} trajectories")
 
     def _load_file(self, file_path: Path):
         """Load a single data file"""
@@ -331,14 +351,22 @@ class PokemonBattleDataset(Dataset):
             traj = self.trajectories[idx]
         else:
             file_path, traj_idx = self.file_index[idx]
-            if file_path.endswith(".pt"):
+
+            # Handle different file types
+            if file_path.endswith(".lz4") and HAS_LZ4:
+                # Metamon .lz4 file - load and convert on-demand
+                data = load_lz4_json(Path(file_path))
+                converted = self._convert_metamon_trajectory(data, Path(file_path))
+                traj = self._process_trajectory(converted)
+            elif file_path.endswith(".pt"):
                 data = torch.load(file_path)
+                trajectories = data if isinstance(data, list) else data.get("trajectories", [data])
+                traj = self._process_trajectory(trajectories[traj_idx])
             else:
                 with open(file_path, "r") as f:
                     data = json.load(f)
-
-            trajectories = data if isinstance(data, list) else data.get("trajectories", [data])
-            traj = self._process_trajectory(trajectories[traj_idx])
+                trajectories = data if isinstance(data, list) else data.get("trajectories", [data])
+                traj = self._process_trajectory(trajectories[traj_idx])
 
         return {
             "text_tokens": traj.text_tokens,
