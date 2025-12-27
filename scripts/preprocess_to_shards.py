@@ -143,17 +143,29 @@ def process_single_file(args: Tuple[str, str, int, int]) -> Dict[str, torch.Tens
         return None
 
 
+def process_chunk(args: Tuple[List[str], int, int]) -> List[Dict]:
+    """Process a chunk of files (called by each worker)"""
+    file_paths, max_turns, num_text_tokens = args
+    results = []
+    for fp in file_paths:
+        result = process_single_file((fp, "gen9ou", max_turns, num_text_tokens))
+        if result is not None:
+            results.append(result)
+    return results
+
+
 def process_batch(file_paths: List[str], max_turns: int, num_text_tokens: int, num_workers: int) -> List[Dict]:
-    """Process a batch of files in parallel"""
-    args_list = [(fp, "gen9ou", max_turns, num_text_tokens) for fp in file_paths]
+    """Process a batch of files in parallel - chunked for efficiency"""
+    # Split files into chunks for each worker
+    chunk_size = max(1, len(file_paths) // num_workers)
+    chunks = []
+    for i in range(0, len(file_paths), chunk_size):
+        chunks.append((file_paths[i:i + chunk_size], max_turns, num_text_tokens))
 
     results = []
     with ProcessPoolExecutor(max_workers=num_workers) as executor:
-        futures = [executor.submit(process_single_file, args) for args in args_list]
-        for future in futures:
-            result = future.result()
-            if result is not None:
-                results.append(result)
+        for chunk_results in executor.map(process_chunk, chunks):
+            results.extend(chunk_results)
 
     return results
 
@@ -208,7 +220,7 @@ def main():
     shard_idx = 0
     current_batch = []
 
-    batch_size = args.num_workers * 4  # Process multiple per worker
+    batch_size = args.num_workers * 100  # Process many per worker for efficiency
 
     progress = tqdm(total=len(lz4_files), desc="Processing files")
 
