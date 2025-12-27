@@ -134,7 +134,7 @@ class PokechampDataset(Dataset):
             "dones": dones,
             "turn_mask": turn_mask,
             "format_id": torch.tensor(0, dtype=torch.long),
-            "won": torch.tensor(rewards[-1] > 0 if seq_len > 0 else False, dtype=torch.bool),
+            "won": torch.tensor(bool(rewards[-1] > 0) if seq_len > 0 else False, dtype=torch.bool),
             "returns_0.9": returns[0.9],
             "returns_0.99": returns[0.99],
             "returns_0.999": returns[0.999],
@@ -164,14 +164,18 @@ class PokechampDataset(Dataset):
         return processed
 
     def _empty_trajectory(self) -> Dict[str, torch.Tensor]:
-        """Return an empty trajectory for failed parses"""
+        """Return a dummy trajectory for failed parses - must have at least 1 valid turn"""
+        turn_mask = torch.zeros(self.max_turns, dtype=torch.bool)
+        turn_mask[0] = True  # At least one valid turn to avoid division by zero
+        dones = torch.zeros(self.max_turns, dtype=torch.bool)
+        dones[0] = True  # Mark as done
         return {
             "text_tokens": torch.zeros(self.max_turns, self.num_text_tokens, dtype=torch.long),
             "numerical_features": torch.zeros(self.max_turns, 48, dtype=torch.float),
             "actions": torch.zeros(self.max_turns, dtype=torch.long),
             "rewards": torch.zeros(self.max_turns, dtype=torch.float),
-            "dones": torch.zeros(self.max_turns, dtype=torch.bool),
-            "turn_mask": torch.zeros(self.max_turns, dtype=torch.bool),
+            "dones": dones,
+            "turn_mask": turn_mask,
             "format_id": torch.tensor(0, dtype=torch.long),
             "won": torch.tensor(False, dtype=torch.bool),
             "returns_0.9": torch.zeros(self.max_turns, dtype=torch.float),
@@ -282,7 +286,7 @@ class StreamingPokechampDataset(IterableDataset):
             "dones": dones,
             "turn_mask": turn_mask,
             "format_id": torch.tensor(0, dtype=torch.long),
-            "won": torch.tensor(rewards[-1] > 0 if seq_len > 0 else False, dtype=torch.bool),
+            "won": torch.tensor(bool(rewards[-1] > 0) if seq_len > 0 else False, dtype=torch.bool),
             "returns_0.9": returns[0.9],
             "returns_0.99": returns[0.99],
             "returns_0.999": returns[0.999],
