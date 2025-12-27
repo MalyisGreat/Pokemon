@@ -1,0 +1,63 @@
+# Training config for preprocessed Metamon shards with 2x GPUs
+# This uses .pt shard files for fast loading with correct action semantics
+
+model:
+  size: "base"  # ~200M parameters
+  use_flash_attention: true
+  use_gradient_checkpointing: true
+
+training:
+  # Batch size per GPU
+  batch_size: 64
+  gradient_accumulation_steps: 2  # Effective batch: 64 * 2 * 2 = 256
+
+  # Learning rate
+  learning_rate: 0.0003
+  warmup_steps: 1000
+  weight_decay: 0.01
+
+  # Training length
+  num_epochs: 3
+  max_steps: null
+
+  max_grad_norm: 1.0
+  compile_model: false
+
+# Data settings - use preprocessed shards
+data:
+  dataset_type: "shards"  # Use shard-based dataset for fast loading
+  path: "/dev/shm/metamon_shards"  # Override with --data_path if needed
+  max_turns: 100
+  gammas: [0.9, 0.99, 0.999, 0.9999]
+
+# RL settings
+rl:
+  actor_method: "binary"
+  actor_coef: 1.0
+  critic_coef: 0.5
+  entropy_coef: 0.01
+  maxq_lambda: 0.9
+  beta: 1.0
+
+# Mixed precision
+optimization:
+  use_mixed_precision: true
+  mixed_precision_dtype: "bf16"
+
+# Logging
+logging:
+  log_interval: 50
+  eval_interval: 1000
+  save_interval: 2000
+  use_wandb: false
+
+# Checkpointing
+checkpoint:
+  output_dir: "checkpoints/metamon_shards"
+  save_total_limit: 3
+
+# Hardware - shards are fast, fewer workers needed
+hardware:
+  num_workers: 8
+  pin_memory: true
+  prefetch_factor: 4
