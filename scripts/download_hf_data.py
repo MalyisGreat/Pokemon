@@ -36,6 +36,8 @@ def download_metamon_replays(output_dir: Path, formats: list = None):
         os.system(f"{sys.executable} -m pip install huggingface_hub")
         from huggingface_hub import hf_hub_download, list_repo_files
 
+    import tarfile
+
     repo_id = "jakegrigsby/metamon-parsed-replays"
     output_dir = output_dir / "metamon"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -55,17 +57,19 @@ def download_metamon_replays(output_dir: Path, formats: list = None):
         print(f"Error listing files: {e}")
         return
 
+    # Filter to tar.gz files (the actual data)
+    data_files = [f for f in files if f.endswith('.tar.gz')]
+
     # Filter by format if specified
     if formats:
-        files = [f for f in files if any(fmt in f for fmt in formats)]
-        print(f"\nFiltered to {len(files)} files for formats: {formats}")
+        data_files = [f for f in data_files if any(fmt in f for fmt in formats)]
+        print(f"\nFiltered to {len(data_files)} files for formats: {formats}")
+    else:
+        print(f"\nFound {len(data_files)} data files to download")
 
-    # Download each file
+    # Download and extract each file
     downloaded = 0
-    for filename in files:
-        if not filename.endswith(('.json', '.json.lz4', '.parquet')):
-            continue
-
+    for filename in data_files:
         try:
             print(f"  Downloading {filename}...", end=" ", flush=True)
             local_path = hf_hub_download(
@@ -74,12 +78,18 @@ def download_metamon_replays(output_dir: Path, formats: list = None):
                 repo_type="dataset",
                 local_dir=output_dir,
             )
-            print(f"OK")
+            print(f"OK", end=" ")
+
+            # Extract tar.gz
+            print(f"Extracting...", end=" ", flush=True)
+            with tarfile.open(local_path, 'r:gz') as tar:
+                tar.extractall(path=output_dir)
+            print(f"Done")
             downloaded += 1
         except Exception as e:
             print(f"FAILED: {e}")
 
-    print(f"\nDownloaded {downloaded} files to {output_dir}")
+    print(f"\nDownloaded and extracted {downloaded} files to {output_dir}")
     return output_dir
 
 
