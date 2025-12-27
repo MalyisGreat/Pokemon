@@ -286,6 +286,10 @@ class TurnEncoder(nn.Module):
         batch_size = text_tokens.shape[0]
         device = text_tokens.device
 
+        # Clamp indices to valid range to prevent index out of bounds errors
+        text_tokens = text_tokens.clamp(0, self.config.vocab_size - 1)
+        prev_action = prev_action.clamp(0, self.config.num_actions)
+
         # Embed text tokens
         text_embeds = self.text_embedding(text_tokens)  # [batch, num_text, token_dim]
 
