@@ -33,6 +33,7 @@ except ImportError:
     HAS_LZ4 = False
 
 from pokemon_ai.data.tokenizer import PokemonTokenizer
+from pokemon_ai.data.state_converter import convert_metamon_state
 
 
 def load_lz4_json(filepath: Path) -> Dict:
@@ -214,8 +215,8 @@ class PokemonBattleDataset(Dataset):
 
         for i in range(min_len):
             state = states[i]
-            # Convert state to text (Metamon states are dicts)
-            text_obs = str(state) if isinstance(state, dict) else state
+            # Convert state to proper text observation using our converter
+            text_obs = convert_metamon_state(state, format_id)
 
             steps.append({
                 "text_obs": text_obs,
