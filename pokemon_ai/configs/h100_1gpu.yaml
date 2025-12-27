@@ -22,7 +22,8 @@ training:
   warmup_steps: 500
   seed: 42
   # Compile model for faster training (PyTorch 2.0+)
-  compile_model: true
+  # Disabled: causes dtype issues with Flash Attention
+  compile_model: false
 
 rl:
   actor_method: "binary"
