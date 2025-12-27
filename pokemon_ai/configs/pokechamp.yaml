@@ -1,0 +1,66 @@
+# PokeChamp Dataset Training Config for 2x H100 GPUs
+# Uses HuggingFace Parquet format - MUCH faster data loading
+
+model:
+  size: "base"  # ~200M parameters
+  use_flash_attention: true
+  use_gradient_checkpointing: true  # Save VRAM
+
+training:
+  # Batch size per GPU - can use larger with faster data loading
+  batch_size: 64
+  gradient_accumulation_steps: 2  # Effective batch: 64 * 2 * 2 = 256
+
+  # Learning rate
+  learning_rate: 0.0003
+  warmup_steps: 1000
+  weight_decay: 0.01
+
+  # Training length
+  num_epochs: 3
+  max_steps: null  # Use epochs
+
+  # Loss weights
+  actor_method: "binary"
+  actor_coef: 1.0
+  critic_coef: 0.5
+  entropy_coef: 0.01
+  maxq_lambda: 0.9
+  beta: 1.0
+
+  # Optimization
+  max_grad_norm: 1.0
+  compile_model: false  # torch.compile can be buggy
+
+# Data settings - PokeChamp specific
+data:
+  dataset_type: "pokechamp"  # Use PokeChamp instead of Metamon
+  max_turns: 100
+  gammas: [0.9, 0.99, 0.999, 0.9999]
+
+  # Optional filters for higher quality data
+  # elo_ranges: ["1600-1799", "1800+"]  # Uncomment for high-ELO only
+  # gamemodes: ["gen9ou"]  # Uncomment for specific format
+
+# Mixed precision
+mixed_precision:
+  enabled: true
+  dtype: "bf16"  # BF16 on H100 - no scaler needed
+
+# Logging
+logging:
+  log_every: 50
+  eval_every: 1000
+  save_every: 2000
+  use_wandb: false
+
+# Checkpointing
+checkpoint:
+  output_dir: "checkpoints/pokechamp_2gpu"
+  save_total_limit: 3
+
+# Hardware - optimized for fast Parquet loading
+hardware:
+  num_workers: 8  # Fewer workers needed - Parquet is fast
+  pin_memory: true
+  prefetch_factor: 4
