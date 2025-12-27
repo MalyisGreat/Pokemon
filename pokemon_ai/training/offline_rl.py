@@ -62,9 +62,12 @@ class OfflineRLConfig:
 
     # Data
     data_path: str = "data/replays"
+    dataset_type: str = "metamon"  # "metamon", "pokechamp", or "shards"
     max_turns: int = 200
     formats: Optional[List[str]] = None  # Filter formats
     min_elo: Optional[int] = None
+    elo_ranges: Optional[List[str]] = None  # For pokechamp: ["1600-1799", "1800+"]
+    gamemodes: Optional[List[str]] = None  # For pokechamp: ["gen9ou"]
 
     # Training
     batch_size: int = 32
@@ -211,21 +214,53 @@ class OfflineRLTrainer:
 
     def _setup_data(self):
         """Setup data loaders with speed optimizations"""
-        self.train_dataloader = create_dataloader(
-            data_path=self.config.data_path,
-            batch_size=self.config.batch_size,
-            max_turns=self.config.max_turns,
-            num_workers=self.config.num_workers,
-            shuffle=True,
-            formats=self.config.formats,
-            min_elo=self.config.min_elo,
-            gammas=self.config.gammas,
-            world_size=self.world_size,
-            rank=self.local_rank,
-            pin_memory=self.config.pin_memory,
-            prefetch_factor=self.config.prefetch_factor if self.config.num_workers > 0 else None,
-            preload_to_ram=self.config.preload_to_ram,
-        )
+        if self.config.dataset_type == "pokechamp":
+            # Use PokeChamp HuggingFace dataset (fast Parquet)
+            from pokemon_ai.data.pokechamp_dataset import create_pokechamp_dataloader
+            self.train_dataloader = create_pokechamp_dataloader(
+                split="train",
+                batch_size=self.config.batch_size,
+                max_turns=self.config.max_turns,
+                num_workers=self.config.num_workers,
+                shuffle=True,
+                world_size=self.world_size,
+                rank=self.local_rank,
+                pin_memory=self.config.pin_memory,
+                prefetch_factor=self.config.prefetch_factor if self.config.num_workers > 0 else None,
+                elo_ranges=self.config.elo_ranges,
+                gamemodes=self.config.gamemodes,
+            )
+        elif self.config.dataset_type == "shards":
+            # Use preprocessed .pt shards (fastest)
+            from pokemon_ai.data.shard_dataset import create_shard_dataloader
+            self.train_dataloader = create_shard_dataloader(
+                shard_dir=self.config.data_path,
+                batch_size=self.config.batch_size,
+                max_turns=self.config.max_turns,
+                num_workers=self.config.num_workers,
+                shuffle=True,
+                world_size=self.world_size,
+                rank=self.local_rank,
+                pin_memory=self.config.pin_memory,
+                prefetch_factor=self.config.prefetch_factor if self.config.num_workers > 0 else None,
+            )
+        else:
+            # Default: Metamon .lz4 files
+            self.train_dataloader = create_dataloader(
+                data_path=self.config.data_path,
+                batch_size=self.config.batch_size,
+                max_turns=self.config.max_turns,
+                num_workers=self.config.num_workers,
+                shuffle=True,
+                formats=self.config.formats,
+                min_elo=self.config.min_elo,
+                gammas=self.config.gammas,
+                world_size=self.world_size,
+                rank=self.local_rank,
+                pin_memory=self.config.pin_memory,
+                prefetch_factor=self.config.prefetch_factor if self.config.num_workers > 0 else None,
+                preload_to_ram=self.config.preload_to_ram,
+            )
 
     def _setup_loss(self):
         """Setup loss function"""
